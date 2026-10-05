@@ -27,6 +27,7 @@ export class SearchService {
     opts: {
       userId?: string;
       workspaceId: string;
+      publicPageIds?: string[];
     },
   ): Promise<{ items: SearchResponseDto[] }> {
     const query = searchParams.query?.trim() ?? '';
@@ -54,11 +55,6 @@ export class SearchService {
         : sql<number>`ts_rank(tsv, to_tsquery('english', f_unaccent(${searchQuery})))`.as(
             'rank',
           );
-    const highlightColumn = browseByFilters || titleOnly
-      ? sql<string>`''`.as('highlight')
-      : sql<string>`ts_headline('english', text_content, to_tsquery('english', f_unaccent(${searchQuery})),'MinWords=9, MaxWords=10, MaxFragments=3')`.as(
-          'highlight',
-        );
 
     let queryResults = this.db
       .selectFrom('pages')
@@ -72,7 +68,6 @@ export class SearchService {
         'createdAt',
         'updatedAt',
         rankColumn,
-        highlightColumn,
       ])
       .$if(!browseByFilters && !titleOnly, (qb) =>
         qb.where(
@@ -109,7 +104,7 @@ export class SearchService {
       .limit(searchParams.limit || 25)
       .offset(searchParams.offset || 0);
 
-    if (!searchParams.shareId) {
+    if (!searchParams.shareId && !opts.publicPageIds) {
       queryResults = queryResults.select((eb) => this.pageRepo.withSpace(eb));
     }
 
@@ -123,6 +118,15 @@ export class SearchService {
           'in',
           this.spaceMemberRepo.getUserSpaceIdsQuery(opts.userId),
         )
+        .where('workspaceId', '=', opts.workspaceId);
+    } else if (opts.publicPageIds && !opts.userId) {
+      // Public space search: the allowed id set is computed from live DB
+      // state by the controller on every request.
+      if (opts.publicPageIds.length === 0) {
+        return { items: [] };
+      }
+      queryResults = queryResults
+        .where('id', 'in', opts.publicPageIds)
         .where('workspaceId', '=', opts.workspaceId);
     } else if (searchParams.shareId && !searchParams.spaceId && !opts.userId) {
       // search in shares
@@ -179,13 +183,49 @@ export class SearchService {
       results = results.filter((r: any) => accessibleSet.has(r.id));
     }
 
+    if (!browseByFilters && !titleOnly && results.length > 0) {
+      const highlights = await this.db
+        .selectFrom('pages')
+        .select([
+          'id',
+          sql<string>`ts_headline('english', substring(text_content, 1, 100000), to_tsquery('english', f_unaccent(${searchQuery})),'MinWords=9, MaxWords=10, MaxFragments=3')`.as(
+            'highlight',
+          ),
+        ])
+        .where(
+          'id',
+          'in',
+          results.map((r: any) => r.id),
+        )
+        .execute();
+      const highlightById = new Map(highlights.map((h) => [h.id, h.highlight]));
+      for (const result of results) {
+        result.highlight = highlightById.get(result.id) ?? '';
+      }
+    }
+
     //@ts-ignore
     const searchResults = results.map((result: SearchResponseDto) => {
-      if (result.highlight) {
-        result.highlight = result.highlight
-          .replace(/\r\n|\r|\n/g, ' ')
-          .replace(/\s+/g, ' ');
+      result.wholeWord = true
+      if (!result.highlight) {
+        result.highlight = '';
+        result.matchedText = [];
+        return result;
       }
+
+      result.highlight = result.highlight
+        .replace(/\r\n|\r|\n/g, ' ')
+        .replace(/\s+/g, ' ');
+
+      result.matchedText = [
+        ...new Set(
+          Array.from(
+            result.highlight.matchAll(/<b>([^<]*)<\/b>/gi),
+            (match) => match[1],
+          ),
+        ),
+      ];
+
       return result;
     });
 

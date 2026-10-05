@@ -6,11 +6,15 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
 } from 'class-validator';
+
+export const SEARCH_QUERY_MAX_LENGTH = 200;
 
 export class SearchDTO {
   @IsOptional()
   @IsString()
+  @MaxLength(SEARCH_QUERY_MAX_LENGTH)
   query?: string;
 
   @IsOptional()
@@ -53,8 +57,15 @@ export class SearchShareDTO extends SearchDTO {
   spaceId: string;
 }
 
+export class SearchPublicSpaceDTO extends SearchDTO {
+  @IsNotEmpty()
+  @IsString()
+  spaceSlug: string;
+}
+
 export class SearchSuggestionDTO {
   @IsString()
+  @MaxLength(SEARCH_QUERY_MAX_LENGTH)
   query: string;
 
   @IsOptional()
